@@ -9,7 +9,8 @@ learning-hooks/
 ├── hooks/                          # All hook implementations
 │   ├── points-hook/               # Basic: Rewards system with ERC-1155
 │   ├── points-hook-broken/        # Educational: Intentionally broken hook
-│   └── flash-loan-hook/           # Advanced: Flash loans with auto-compounding
+│   ├── flash-loan-hook/           # Advanced: Flash loans with auto-compounding
+│   └── gas-price-fees-hook/       # Intermediate: Dynamic fees based on gas prices
 ├── ideas/                         # Unimplemented hook concepts
 ├── lib/                           # Shared dependencies (Uniswap v4, Forge)
 └── README.md                      # This file
@@ -21,6 +22,7 @@ learning-hooks/
 |------|-----------|----------|-------------|
 | [points-hook](hooks/points-hook/) | ⭐ Basic | `afterSwap`, ERC-1155, hookData | Rewards system that mints point tokens to swappers |
 | [points-hook-broken](hooks/points-hook-broken/) | ⭐ Basic | Permission errors, debugging | Intentionally broken to teach permission matching |
+| [gas-price-fees-hook](hooks/gas-price-fees-hook/) | ⭐⭐ Intermediate | Dynamic fees, moving average, gas price oracle | Adjusts swap fees based on network gas prices |
 | [flash-loan-hook](hooks/flash-loan-hook/) | ⭐⭐⭐ Advanced | Multiple hooks, flash loans, ERC-4626, unlock pattern | Flash loan provider with auto-compounding yields |
 
 ## Quick Start
@@ -73,7 +75,24 @@ A common mistake turned into a learning opportunity!
 
 ---
 
-### 3. Flash Loan Hook
+### 3. Gas Price Fees Hook
+**Level:** Intermediate
+**File:** `hooks/gas-price-fees-hook/`
+
+A dynamic fee hook that adjusts swap fees based on network congestion:
+- Dynamic fee pools with `DYNAMIC_FEE_FLAG`
+- Moving average gas price tracking
+- Fee override mechanism in `beforeSwap`
+- Gas price-based fee adjustment (lower fees during high gas, higher fees during low gas)
+- Real-time state updates in `afterSwap`
+
+Demonstrates how to create responsive fee structures that adapt to network conditions. Users are incentivized to trade during low-congestion periods.
+
+[Read more →](hooks/gas-price-fees-hook/README.md)
+
+---
+
+### 4. Flash Loan Hook
 **Level:** Advanced
 **File:** `hooks/flash-loan-hook/`
 
@@ -98,7 +117,10 @@ Liquidity providers earn automatically compounding yields from flash loan fees. 
 2. **Study points-hook-broken**
    Understand common mistakes and error handling.
 
-3. **Tackle flash-loan-hook**
+3. **Explore gas-price-fees-hook**
+   Learn about dynamic fees, moving averages, and fee override mechanisms.
+
+4. **Tackle flash-loan-hook**
    Dive into advanced concepts like flash loans, share accounting, and the unlock pattern.
 
 ## Hook Concepts Covered
@@ -115,6 +137,11 @@ Liquidity providers earn automatically compounding yields from flash loan fees. 
 - ✅ Swap direction (`zeroForOne` vs `oneForZero`)
 - ✅ ETH vs ERC20 handling
 - ✅ Error handling and debugging
+- ✅ Dynamic fee pools and `DYNAMIC_FEE_FLAG`
+- ✅ Fee override mechanism with `OVERRIDE_FEE_FLAG`
+- ✅ Moving average calculations onchain
+- ✅ Gas price tracking (`tx.gasprice`)
+- ✅ State management for metrics
 
 ### Advanced Concepts
 - ✅ Flash loans in Uniswap v4
