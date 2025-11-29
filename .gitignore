@@ -5,17 +5,28 @@ out/
 # Ignores development broadcast logs
 !/broadcast
 /broadcast/*/31337/
+/broadcast/*/5/
 /broadcast/**/dry-run/
-
-# Docs
-docs/
 
 # Dotenv file
 .env
 
 # Dependencies
 lib/
+node_modules/
 .gitmodules
 
 # IDE
 .idea/
+.vscode/
+
+# Coverage
+lcov.info
+
+# OS
+.DS_Store
+
+# Hardhat
+typechain-types/
+cache_hardhat/
+artifacts/
