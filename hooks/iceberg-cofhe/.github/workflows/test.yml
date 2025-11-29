@@ -1,0 +1,95 @@
+name: test
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - "main"
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  foundry-check:
+    strategy:
+      fail-fast: true
+
+    name: Foundry project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+
+      - name: Show pnpm version
+        run: |
+          pnpm --version
+
+      - name: Install pnpm dependencies
+        run: |
+          pnpm install
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge Version
+        run: |
+          forge --version
+
+      - name: Run Forge build
+        run: |
+          forge build --via-ir
+        id: build
+
+      - name: Run Forge tests
+        run: |
+          forge test --via-ir
+        id: test
+      
+      - name: Test Coverage
+        run: |
+          forge coverage --ir-minimum --report lcov --no-match-coverage script
+        id: report
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # hardhat-check:
+  #   strategy:
+  #     fail-fast: true
+
+  #   name: Hardhat project
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #       with:
+  #         submodules: recursive
+
+  #     - name: Install Foundry
+  #       uses: foundry-rs/foundry-toolchain@v1
+
+  #     - name: Install pnpm
+  #       uses: pnpm/action-setup@v4
+  #       with:
+  #         version: 8
+
+  #     - name: Show pnpm version
+  #       run: |
+  #         pnpm --version
+
+  #     - name: Install pnpm dependencies
+  #       run: |
+  #         pnpm install
+
+  #     - name: Hardhat compile
+  #       run: |
+  #         pnpm hardhat compile
+  #       id: build

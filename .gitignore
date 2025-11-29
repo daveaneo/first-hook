@@ -26,6 +26,9 @@ lcov.info
 # OS
 .DS_Store
 
+# Claude Code
+.claude/
+
 # Hardhat
 typechain-types/
 cache_hardhat/
