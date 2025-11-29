@@ -38,32 +38,35 @@
 
 ## Architecture Overview
 
-### One Pool, Two Interfaces
+### Unified Encrypted Swap Interface
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Encrypted AMM Pool                            │
-│              (public reserves: reserve0, reserve1)               │
+│                                                                  │
+│   Source of Truth: encReserve0, encReserve1 (encrypted)          │
+│   Display Cache:   reserve0, reserve1 (public, eventually consistent) │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│   swapPrivate(                   swapPublic(                     │
-│     InEbool direction,             bool direction,               │
-│     InEuint128 amount,             uint256 amount,               │
-│     InEuint128 minOutput           uint256 minOutput             │
-│   )                              )                               │
+│   swap(                                                          │
+│     InEbool direction,                                           │
+│     InEuint128 amount,                                           │
+│     InEuint128 minOutput                                         │
+│   )                                                              │
 │                                                                  │
-│   - Encrypted inputs             - Plaintext inputs              │
-│   - Full privacy                 - Visible in mempool            │
-│   - Same pool liquidity          - Same pool liquidity           │
+│   - ALL swaps go through encrypted path                          │
+│   - "Public" swaps just encrypt plaintext inputs first           │
+│   - All math uses encrypted reserves (source of truth)           │
+│   - Slippage protection via FHE comparison                       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Why two interfaces?**
-- `swapPublic`: Arbitrageurs keep our pool price aligned with market
-- `swapPrivate`: Privacy-seeking traders get full encryption
+**Single interface, two entry points:**
+- `swap()`: Direct encrypted inputs (full privacy)
+- `swapPlaintext()`: Convenience wrapper that encrypts inputs, then calls `swap()`
 
-**Both use the same reserves and same swap logic internally.**
+**All swaps use the same encrypted reserves and same swap logic.**
 
 ---
 
@@ -71,11 +74,12 @@
 
 | Data | Visibility | Rationale |
 |------|------------|-----------|
-| reserve0, reserve1 | **Public** | Users need to calculate expected prices |
-| currentPrice | **Public** | Derived from reserves |
+| encReserve0, encReserve1 | **Encrypted** | Source of truth for all swap math |
+| reserve0, reserve1 | **Public (cache)** | Eventually consistent display values for UX |
+| currentPrice | **Public (cache)** | Derived from public reserves, may be stale |
 | user balances | **Encrypted** | Per-user privacy |
-| swap direction | **Encrypted** (private) / Public (public) | Core privacy feature |
-| swap amount | **Encrypted** (private) / Public (public) | Core privacy feature |
+| swap direction | **Encrypted** | Always encrypted, even for "public" swaps |
+| swap amount | **Encrypted** | Always encrypted, even for "public" swaps |
 | limit order trigger tick | **Public** | Needed for trigger detection |
 | limit order direction | **Encrypted** | Hidden until execution |
 | limit order amount | **Encrypted** | Hidden until execution |
@@ -84,46 +88,10 @@
 
 ## Swap Flows
 
-### swapPublic (Sync, Single TX)
+### Unified Swap (Single TX, Sync)
 
 ```solidity
-function swapPublic(
-    bool direction,
-    uint256 amount,
-    uint256 minOutput
-) external {
-    // 1. Direction lock
-    _enforceDirectionLock(direction);
-
-    // 2. Calculate expected output from PUBLIC reserves
-    uint256 expectedOutput = _calculateOutput(direction, amount);
-    require(expectedOutput >= minOutput, "Slippage exceeded");
-
-    // 3. Execute encrypted swap math (for internal consistency)
-    ebool encDir = FHE.asEbool(direction);
-    euint128 encAmt = FHE.asEuint128(amount);
-    euint128 actualOutput = _executeSwapMath(encDir, encAmt);
-
-    // 4. Verify encrypted matches expected
-    euint128 encExpected = FHE.asEuint128(expectedOutput);
-    ebool isValid = FHE.eq(actualOutput, encExpected);
-    euint128 finalOutput = FHE.select(isValid, actualOutput, FHE.asEuint128(0));
-
-    // 5. Update public reserves
-    _updateReserves(direction, amount, expectedOutput);
-
-    // 6. Transfer plaintext tokens
-    _transferTokensPublic(direction, amount, expectedOutput);
-
-    // 7. Check for triggered limit orders, execute them
-    _checkAndExecuteLimitOrders(msg.sender);
-}
-```
-
-### swapPrivate (Sync, Single TX)
-
-```solidity
-function swapPrivate(
+function swap(
     InEbool calldata direction,
     InEuint128 calldata amount,
     InEuint128 calldata minOutput
@@ -132,10 +100,10 @@ function swapPrivate(
     euint128 encAmt = FHE.asEuint128(amount);
     euint128 encMinOutput = FHE.asEuint128(minOutput);
 
-    // 1. Direction lock (need to handle encrypted direction)
-    //    See "Direction Lock for Encrypted Direction" section
+    // 1. Direction lock (encrypted - see Direction Lock section)
+    _enforceDirectionLockEncrypted(encDir);
 
-    // 2. Execute encrypted swap math
+    // 2. Execute encrypted swap math against ENCRYPTED reserves
     euint128 actualOutput = _executeSwapMath(encDir, encAmt);
 
     // 3. Slippage check (encrypted)
@@ -143,13 +111,33 @@ function swapPrivate(
     euint128 finalOutput = FHE.select(slippageOk, actualOutput, FHE.asEuint128(0));
 
     // 4. Transfer encrypted tokens
-    _transferTokensPrivate(encDir, encAmt, finalOutput);
+    _transferTokensEncrypted(encDir, encAmt, finalOutput);
 
     // 5. Credit user's encrypted balance
     userBalance[msg.sender] = FHE.add(userBalance[msg.sender], finalOutput);
 
-    // 6. Check for triggered limit orders, execute them
+    // 6. Request async reserve sync (non-blocking)
+    _requestReserveSync();
+
+    // 7. Check for triggered limit orders, execute them
     _checkAndExecuteLimitOrders(msg.sender);
+}
+```
+
+### Plaintext Convenience Wrapper
+
+```solidity
+function swapPlaintext(
+    bool direction,
+    uint256 amount,
+    uint256 minOutput
+) external {
+    // Encrypt inputs and call unified swap
+    InEbool memory encDir = _toInEbool(direction);
+    InEuint128 memory encAmt = _toInEuint128(amount);
+    InEuint128 memory encMinOutput = _toInEuint128(minOutput);
+
+    swap(encDir, encAmt, encMinOutput);
 }
 ```
 
@@ -158,9 +146,7 @@ function swapPrivate(
 ```solidity
 function _executeSwapMath(ebool direction, euint128 amountIn) internal returns (euint128 amountOut) {
     // x * y = k formula, all encrypted
-
-    euint128 encReserve0 = FHE.asEuint128(reserve0);
-    euint128 encReserve1 = FHE.asEuint128(reserve1);
+    // Uses ENCRYPTED reserves as source of truth
 
     // Select reserves based on direction
     euint128 reserveIn = FHE.select(direction, encReserve0, encReserve1);
@@ -171,15 +157,113 @@ function _executeSwapMath(ebool direction, euint128 amountIn) internal returns (
     euint128 denominator = FHE.add(reserveIn, amountIn);
     amountOut = FHE.div(numerator, denominator);
 
-    // Update encrypted reserves (will sync with public reserves for public swaps)
+    // Update ENCRYPTED reserves (source of truth)
     euint128 newReserveIn = FHE.add(reserveIn, amountIn);
     euint128 newReserveOut = FHE.sub(reserveOut, amountOut);
 
-    // Apply based on direction
+    // Apply based on direction (branchless)
     encReserve0 = FHE.select(direction, newReserveIn, newReserveOut);
     encReserve1 = FHE.select(direction, newReserveOut, newReserveIn);
 }
 ```
+
+---
+
+## Reserve Consistency Model
+
+### The Problem
+
+After any swap, the encrypted reserves (`encReserve0`, `encReserve1`) are updated immediately. But public reserves (`reserve0`, `reserve1`) cannot be updated sync because we'd need to decrypt the new values.
+
+### Solution: Eventual Consistency
+
+**Public reserves are a display cache, not the source of truth.**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Reserve Architecture                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   encReserve0, encReserve1    ←── Source of truth (encrypted)    │
+│         │                                                        │
+│         │ async decrypt                                          │
+│         ▼                                                        │
+│   reserve0, reserve1          ←── Display cache (public, stale)  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Behavior
+
+1. **All swap math uses encrypted reserves** - always accurate
+2. **Public reserves may lag** - updated when async decrypt completes
+3. **No trades blocked** - swaps always attempt, slippage protects users
+4. **Stale prices = slippage failures** - not silent wrong execution
+
+### Implementation
+
+```solidity
+// Encrypted reserves (source of truth)
+euint128 internal encReserve0;
+euint128 internal encReserve1;
+
+// Public reserves (display cache, eventually consistent)
+uint256 public reserve0;
+uint256 public reserve1;
+
+// Pending decrypt handles
+euint128 internal pendingReserve0;
+euint128 internal pendingReserve1;
+
+function _requestReserveSync() internal {
+    // Request async decryption of current encrypted reserves
+    pendingReserve0 = encReserve0;
+    pendingReserve1 = encReserve1;
+    FHE.decrypt(pendingReserve0);
+    FHE.decrypt(pendingReserve1);
+}
+
+function getReserves() public returns (uint256 r0, uint256 r1) {
+    // Try to sync before returning (lazy update)
+    _trySyncReserves();
+    return (reserve0, reserve1);
+}
+
+function _trySyncReserves() internal {
+    // Check if pending decrypts are ready
+    (uint256 val0, bool ready0) = FHE.getDecryptResultSafe(pendingReserve0);
+    (uint256 val1, bool ready1) = FHE.getDecryptResultSafe(pendingReserve1);
+
+    if (ready0 && ready1) {
+        reserve0 = val0;
+        reserve1 = val1;
+    }
+    // If not ready, public reserves stay stale - that's fine
+}
+```
+
+### User Experience
+
+| Scenario | What Happens |
+|----------|--------------|
+| User queries price | Gets `reserve0/reserve1` (may be slightly stale) |
+| User submits swap with tight slippage | May fail if real price moved significantly |
+| User submits swap with reasonable slippage | Succeeds, gets accurate output from encrypted math |
+| Reserves sync after decrypt | Next `getReserves()` returns fresh values |
+
+### Why This Works
+
+- **Accurate execution:** All swaps use encrypted reserves (truth)
+- **Slippage protection:** Users set tolerance, FHE checks it
+- **No blocking:** Trades never rejected due to sync state
+- **Self-correcting:** Prices eventually catch up
+- **Familiar UX:** Feels like normal DEX slippage (someone traded before you)
+
+### Trade-offs Accepted
+
+- Routers/aggregators see stale prices temporarily
+- Users may experience more slippage failures during high activity
+- No griefing vector - stale prices hurt no one, just cause failed TXs
 
 ---
 
@@ -453,17 +537,18 @@ User reads events off-chain, decrypts to know their balance. No async on-chain c
 
 ## Summary: Call Patterns
 
-| Action | TX Count | Sync? |
-|--------|----------|-------|
-| swapPublic | 1 | ✅ |
-| swapPrivate | 1 | ✅ |
-| placeOrder | 1 | ✅ |
-| Order trigger + execute | 0 (piggybacks on swap) | ✅ |
-| Deposit (ERC20) | 1 | ✅ |
-| Deposit (fheERC20) | 1 | ✅ |
-| Withdraw (encrypted) | 1 | ✅ |
-| Withdraw (plaintext) | 2 (request + claim) | ❌ Async |
-| Confirm balance (optional) | 1 | ❌ Async (user's choice) |
+| Action | TX Count | Sync? | Notes |
+|--------|----------|-------|-------|
+| swap (encrypted) | 1 | ✅ | All swaps use this path |
+| swapPlaintext | 1 | ✅ | Convenience wrapper |
+| placeOrder | 1 | ✅ | |
+| Order trigger + execute | 0 (piggybacks on swap) | ✅ | |
+| Deposit (ERC20) | 1 | ✅ | |
+| Deposit (fheERC20) | 1 | ✅ | |
+| Withdraw (encrypted) | 1 | ✅ | |
+| Withdraw (plaintext) | 2 (request + claim) | ❌ Async | |
+| getReserves | 1 | ✅ | Lazy syncs if decrypt ready |
+| Reserve sync | Background | ❌ Async | Non-blocking, eventual |
 
 ---
 
@@ -523,7 +608,8 @@ src/
 ├── EncryptedAMM.sol              # Main contract
 ├── lib/
 │   ├── DirectionLock.sol         # Transient storage direction lock
-│   └── SwapMath.sol              # FHE swap calculations
+│   ├── SwapMath.sol              # FHE swap calculations
+│   └── ReserveSync.sol           # Eventual consistency logic
 ├── interface/
 │   └── IEncryptedAMM.sol
 test/
@@ -532,8 +618,8 @@ test/
 │   ├── ProbeAttack.t.sol         # Direction lock tests
 │   └── PrivacyLeak.t.sol         # Ensure no direction/amount leaks
 ├── functional/
-│   ├── SwapPublic.t.sol
-│   ├── SwapPrivate.t.sol
+│   ├── Swap.t.sol                # Unified swap tests
+│   ├── ReserveSync.t.sol         # Eventual consistency tests
 │   ├── LimitOrders.t.sol
 │   └── Deposits.t.sol
 ```
@@ -545,8 +631,12 @@ test/
 | Aspect | v2 | v3 |
 |--------|----|----|
 | AMM Engine | Uniswap's poolManager | Our own encrypted AMM |
+| Swap interface | Two (public/private) | **Unified** (all encrypted) |
 | Execution | Async (decrypt required) | Fully sync |
-| Reserves | Encrypted | **Public** (users need prices) |
+| Reserves (truth) | Public | **Encrypted** (source of truth) |
+| Reserves (display) | N/A | **Public cache** (eventually consistent) |
+| Reserve sync | N/A | **Lazy on getReserves()** |
+| Trade blocking | On stale reserves | **Never** (slippage protects) |
 | Limit order execution | Separate TX after trigger | **Same TX as trigger** |
 | Executor reward | Sent to tx.origin | **Augments executor's output** |
-| Arbitrage | External to Uniswap | **swapPublic interface** |
+| Arbitrage | External to Uniswap | **swapPlaintext interface** |
